@@ -1,3 +1,6 @@
+## 0.2.3
+* Improve `process()` performance (3-4x faster on real templates, output unchanged): skip strings without placeholders and plain keys, avoid copying the context when nothing is added to it, and compile regexes once.
+
 ## 0.2.2
 * Add recursive placeholder processing in resolved values (nested placeholders)
 
