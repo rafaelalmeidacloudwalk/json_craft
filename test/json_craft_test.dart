@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:json_craft/functions/json_craft_function.dart';
 import 'package:json_craft/json_craft.dart';
 import 'package:test/test.dart';
 
@@ -1650,4 +1651,81 @@ void main() {
       expect(processedMap['users'][1], equals({'title': 'Bem vindo Ana - 35'}));
     });
   });
+
+  group('JsonCraft - Fast paths', () {
+    test('mantém intactas strings e chaves sem placeholders', () {
+      final jsonCraft = JsonCraft();
+      const template = '''
+      {
+        "plain": "texto { com } chaves soltas",
+        "empty": "",
+        "nested": {"list": ["a", 1, true, null, {"k": "v"}]},
+        "mixed": "Olá {{data.name}}!"
+      }
+      ''';
+
+      final result = jsonDecode(jsonCraft.process(template, {
+        'data': {'name': 'Ana'},
+      }));
+
+      expect(result, {
+        'plain': 'texto { com } chaves soltas',
+        'empty': '',
+        'nested': {
+          'list': ['a', 1, true, null, {'k': 'v'}],
+        },
+        'mixed': 'Olá Ana!',
+      });
+    });
+
+    test('ainda aplica funções customizadas cuja chave não usa {{#', () {
+      final jsonCraft = JsonCraft(functions: [_UpperKeyFunction()]);
+      const template = '{"@upper name": "{{data.name}}", "other": "x"}';
+
+      final result = jsonDecode(jsonCraft.process(template, {
+        'data': {'name': 'Ana'},
+      }));
+
+      expect(result, {'NAME': 'Ana', 'other': 'x'});
+    });
+
+    test('não vaza o contexto do #with para fora do bloco', () {
+      final jsonCraft = JsonCraft();
+      const template = '''
+      {
+        "{{#with:data.user}}profile": {"inside": "{{name}}"},
+        "outside": "{{data.label}}"
+      }
+      ''';
+      final context = <String, dynamic>{
+        'data': {
+          'user': {'name': 'Ana'},
+          'label': 'fora',
+        },
+      };
+
+      final result = jsonDecode(jsonCraft.process(template, context));
+
+      expect(result["profile"]["inside"], "Ana");
+      expect(result['outside'], 'fora');
+      expect(context.containsKey('name'), isFalse);
+    });
+  });
+}
+
+/// Turns `"@upper key": value` into `"KEY": value`.
+class _UpperKeyFunction extends JsonCraftFunction {
+  @override
+  RegExp get regex => RegExp('@upper ');
+
+  @override
+  Map<String, dynamic> call(
+    String key,
+    dynamic value,
+    GetValueFromPathFunction getValue,
+    ReplaceRecursiveFunction replaceRecursive,
+    Map<String, String>? templates,
+  ) {
+    return {clearKey(key).toUpperCase(): replaceRecursive(value)};
+  }
 }

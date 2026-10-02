@@ -22,7 +22,14 @@ class JsonCraft {
     if (functions != null) {
       _functions.addAll(functions);
     }
+    _functionKeysNeedHash = _functions.every(
+      (function) => function.regex.pattern.startsWith(r'\{\{#'),
+    );
   }
+
+  /// Whether every registered function only matches keys containing `{{#`,
+  /// as all the built-in ones do. Lets plain keys skip the function lookup.
+  late final bool _functionKeysNeedHash;
 
   String process(String jsonString, Map<String, dynamic> data,
       {Map<String, String>? templates}) {
@@ -46,8 +53,7 @@ class JsonCraft {
   // Remove comments from JSON template string
   String _removeComments(String jsonString) {
     // Regex to match {{! ... }} comments (including multiline)
-    final commentRegex = RegExp(r'\{\{!.*?\}\}', dotAll: true);
-    return jsonString.replaceAll(commentRegex, '');
+    return jsonString.replaceAll(_commentRegex, '');
   }
 
   // Recursive function to traverse JSON object and replace placeholders
@@ -57,6 +63,10 @@ class JsonCraft {
     Map<String, String>? templates,
   ) {
     if (data is String) {
+      // Fast path: a string with no `{{` has nothing to replace.
+      if (!data.contains('{{')) {
+        return data;
+      }
       if (_isCompletePlaceholder(data)) {
         if (_isIncludePlaceholder(data)) {
           return _getIncludedTemplate(data, templates, context);
@@ -71,6 +81,14 @@ class JsonCraft {
       data.forEach((key, value) {
         final processedKey = key as String;
 
+        // Fast path: when every function key contains `{{#`, any other key
+        // keeps its name and has its value processed in the same context.
+        if (_functionKeysNeedHash && !processedKey.contains('{{#')) {
+          newMap[processedKey] =
+              _replacePlaceholdersRecursive(value, context, templates);
+          return;
+        }
+
         final function = _functions.firstWhere(
           (element) => element.has(processedKey),
           orElse: () => JsonCraftEmptyFunction(),
@@ -82,10 +100,10 @@ class JsonCraft {
             (value) => _getValueFromPath(value, context),
             (data, {extraContext}) => _replacePlaceholdersRecursive(
               data,
-              {
-                ...context,
-                ...extraContext ?? {},
-              },
+              // Only copy the context when there is something to add to it.
+              extraContext == null || extraContext.isEmpty
+                  ? context
+                  : {...context, ...extraContext},
               templates,
             ),
             templates,
@@ -109,8 +127,11 @@ class JsonCraft {
     return data;
   }
 
-  // Regular expression to find placeholders
+  // Regular expressions, compiled once instead of on every call.
+  static final _commentRegex = RegExp(r'\{\{!.*?\}\}', dotAll: true);
   static final _placeholderRegex = RegExp(r'\{\{([^}]+)\}\}');
+  static final _completePlaceholderRegex = RegExp(r'^\{\{([^}]+)\}\}$');
+  static final _includeRegex = RegExp(r'^\{\{#include:(\*)?([^}]+)\}\}$');
 
   // Get value following a path in the context
   dynamic _getValueFromPath(String path, Map<String, dynamic> context,
@@ -157,15 +178,13 @@ class JsonCraft {
 
   // Check if the string is a complete placeholder
   bool _isCompletePlaceholder(String text) {
-    final regex = RegExp(r'^\{\{([^}]+)\}\}$');
-    return regex.hasMatch(text);
+    return _completePlaceholderRegex.hasMatch(text);
   }
 
   // Get placeholder value preserving the original type
   dynamic _getPlaceholderValue(String text, Map<String, dynamic> context,
       {int depth = 0}) {
-    final regex = RegExp(r'^\{\{([^}]+)\}\}$');
-    final match = regex.firstMatch(text);
+    final match = _completePlaceholderRegex.firstMatch(text);
 
     if (match == null) {
       throw Exception('Invalid placeholder: $text');
@@ -200,11 +219,8 @@ class JsonCraft {
   // Function to replace placeholders in a single string
   String _replaceStringPlaceholders(String text, Map<String, dynamic> context,
       {int depth = 0}) {
-    // Regular expression to find "{{some.key | formatter}}"
-    // Also captures optional formatters
-    final regex = RegExp(r'\{\{([^}]+)\}\}');
-
-    return text.replaceAllMapped(regex, (match) {
+    // Finds "{{some.key | formatter}}", formatters included.
+    return text.replaceAllMapped(_placeholderRegex, (match) {
       final placeholder = match.group(1); // e.g.: "data.name | pascalCase"
       if (placeholder == null) {
         throw Exception('Placeholder not found: ${match.group(0)!}');
@@ -269,8 +285,7 @@ class JsonCraft {
 
   // Check if the key has an include ({{#include:id}} or {{#include:*path}})
   bool _isIncludePlaceholder(String text) {
-    final regex = RegExp(r'^\{\{#include:(\*)?([^}]+)\}\}$');
-    return regex.hasMatch(text);
+    return _includeRegex.hasMatch(text);
   }
 
   // Get and process an included template
@@ -280,8 +295,7 @@ class JsonCraft {
       throw Exception('Templates not provided for inclusion: $text');
     }
 
-    final regex = RegExp(r'^\{\{#include:(\*)?([^}]+)\}\}$');
-    final match = regex.firstMatch(text);
+    final match = _includeRegex.firstMatch(text);
 
     if (match == null) {
       throw Exception('Invalid include syntax: $text');
